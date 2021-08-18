@@ -1,124 +1,75 @@
 import os
 import sys
 import argparse
-import re
+import pandas as pd 
 
-def get_script_commands(script_file):
+def rccl_tests_log_processor(script_file):
     fs = open(script_file, 'r')
     lines = fs.readlines()
     fs.close()
-
-    commands = []
+    results = []
+    temp = []
     for j in range(len(lines)):
         line = lines[j].rstrip()
-        commands.append(line)
-
-    return commands
-
-def parse_useful_information(log_file):
-    fs = open(log_file, 'r')
-    lines = fs.readlines()
-    fs.close()
-
-    useful_lines = []
-    for j in range(len(lines)):
-        line = lines[j].rstrip()
-        if ("time" in line and "algbw" in line and "busbw" in line):
+        if ('==========================================================' in line and j != 0):
+            results.append(temp)
+            temp = []
+        elif ("time" in line and "algbw" in line and "busbw" in line):
             perf_line = lines[j+2]
-            if ("Avg bus bandwidth" in lines[j+5]):
+            if ("Avg bus bandwidth" in lines[j + 5]):
                 perf_line = perf_line + lines[j + 5]
-            elif ("Avg bus bandwidth" in lines[j+4]):
-                perf_line = perf_line + lines[j+4]
-            useful_lines.append(perf_line)
-    return useful_lines
-
-def parse_nccl_performance(useful_lines, commands):
+            elif ("Avg bus bandwidth" in lines[j + 4]):
+                perf_line = perf_line + lines[j + 4]
+            temp.append(perf_line)
     
-    perf_lines = []
-    perf_lines.append("sep=|")
-    header = "size|count|type|redop|root|time-oplace(us)|algbw(gb/s)-oplace|busbw(gb/s)-oplace|error|" + \
-             "time-iplace(us)|algbw(gb/s)-iplace|busbw(gb/s)-iplace|error|avg_bus_bw|commands"
-    #print(header)
-    num_fields = len(header.split("|"))
-    perf_lines.append(header)
-    for j in range(len(useful_lines)):
-        line = useful_lines[j]
-        line = line.replace("# Avg bus bandwidth    : ", "")
-        
-        split_list = line.split()
-        perf_line = ""
-        field_index = 0
-        for i in range(len(split_list)):
-            perf_line = perf_line + split_list[i] + "|"
-            # Some collectives do not involve a redop
-            if field_index==2 and "reduce" not in commands[j].lower():
-                perf_line = perf_line + "|"
-                field_index = field_index + 1
-            # Only broadcast and reduce involve a root
-            if (
-               field_index==3 and
-               re.search(r'\Wreduce_perf', commands[j]) is None and
-               re.search(r'\Wbroadcast_perf', commands[j]) is None
-            ):
-                perf_line = perf_line + "|"
-                field_index = field_index + 1
-            field_index = field_index + 1
-        #print (perf_line + commands[j])
-        perf_line = perf_line + commands[j]
-        assert len(perf_line.split("|")) == num_fields
-        perf_lines.append(perf_line)
+    return results
 
-    return perf_lines
-
-def get_counts_from_file(count_file):
-    fs = open(count_file, 'r')
-    lines = fs.readlines()
-    fs.close()
-
-    counts = []
-    for j in range(1, len(lines)):
-        line = lines[j].rstrip()
-        counts.append(line.split("|")[1])
-    return counts
-
-def update_perf_lines(perf_lines, counts):
+def parse_nccl_performance(perf_lines, net_counts_csv, output_file):
+    size, count_1, datatype, op_type, time_oplace, algbw_gbs_oplace, busbw_oplace, error_oplace, time_iplace, algbw_gbs_iplace, busbw_iplace, error_iplace, avg_busbw, count = [], [], [], [], [], [], [], [], [], [], [], [], [], []
+    count_table = pd.read_csv(net_counts_csv)
+    for i, row in count_table.iterrows():
+        for line in perf_lines[i]:
+            split_list = line.split()
+            size.append(split_list[0])
+            count_1.append(split_list[1])
+            datatype.append(split_list[2])
+            op_type.append(split_list[3])
+            time_oplace.append(split_list[4])
+            algbw_gbs_oplace.append(split_list[5])
+            busbw_oplace.append(split_list[6])
+            error_oplace.append(split_list[7])
+            time_iplace.append(split_list[8])
+            algbw_gbs_iplace.append(split_list[9])
+            busbw_iplace.append(split_list[10])
+            error_iplace.append(split_list[11])
+            avg_busbw.append(split_list[-1])
+            assert row['count'] % len(perf_lines[i]) == 0
+            count.append(int(row['count']//len(perf_lines[i])))
     
-    updated_lines = []
-    updated_lines.append("sep=|")
-    updated_lines.append(perf_lines[1] + "|count")
-    for j in range(2, len(perf_lines)):
-        perf_line = perf_lines[j] + "|" +  counts[j-2]
-        updated_lines.append(perf_line)
+    dict_summary = {"size":size, "count_1":count_1, "datatype":datatype, 
+                          "op_type":op_type, "time_oplace":time_oplace, "algbw_gbs_oplace":algbw_gbs_oplace,
+                          "busbw_oplace":busbw_oplace, "error_oplace":error_oplace, "time_iplace":time_iplace,
+                          "algbw_gbs_iplace":algbw_gbs_iplace, "busbw_iplace":busbw_iplace, "error_iplace":error_iplace,
+                          "avg_busbw":avg_busbw, "count":count}
+    table = pd.DataFrame(dict_summary)
+    table.to_csv(output_file)
+    print ("INFO: Dumped out the count of each command in a file named: {}".format(output_file)) 
+    return table
 
-    return updated_lines
-        
-def generate_output_file(out_file, perf_lines):
-    fs = open(out_file, 'w')
-    for j in range(len(perf_lines)):
-        fs.write(perf_lines[j])
-        fs.write('\n')
-    fs.close()
-    print ("INFO: Dumped out the performance.")
 
 def main():
     log_file = os.path.abspath(args.log_file)
+    count_file = os.path.abspath(args.count_file)
     out_file = args.output_file_name + ".csv"
-    script_file = os.path.abspath(args.script_file)
-
-    commands = get_script_commands(script_file)
-    useful_lines = parse_useful_information(log_file)
-    perf_lines = parse_nccl_performance(useful_lines, commands)
-    if args.count_file:
-        counts = get_counts_from_file(os.path.abspath(args.count_file))
-        perf_lines = update_perf_lines(perf_lines, counts)
-    generate_output_file(out_file, perf_lines)
+    results = rccl_tests_log_processor(log_file) # net_unique_topo.sh
+    parse_nccl_performance(results, count_file, out_file)
+        
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--log-file", type=str, required=True, help="Log file generated while running rccl-tests")
+    parser.add_argument("--log-file", type=str, required=True, help="Log file generated while running rccl-tests with net_unique_topo.sh")
     parser.add_argument("--output-file-name", type=str, required=False, default="net_summary")
-    parser.add_argument("--script-file", type=str, required=True, help="Script file to run NCCL/RCCL Tests")
-    parser.add_argument("--count-file", type=str, required=False, help="net_count file generated while running unique option in parser.")
+    parser.add_argument("--count-file", type=str, required=False, default="net_counts.csv", help="net_count file generated while running unique option in parser.")
 
     args = parser.parse_args()
     main()
